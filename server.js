@@ -145,7 +145,7 @@ app.get("/media", async (req, res) => {
   const { path: filePath } = req.query;
   if (!filePath || !BOT_TOKEN) return res.status(400).json({ error: "Missing path or token" });
   try {
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+    const url = `https://locked-rolls-headphones-unexpected.trycloudflare.com/file/bot${BOT_TOKEN}/${filePath}`;
     const r = await fetch(url);
     if (!r.ok) return res.status(404).json({ error: "File not found" });
     const ct = r.headers.get("content-type") || "application/octet-stream";
@@ -163,10 +163,10 @@ app.get("/media-id", async (req, res) => {
   if (!file_id || !BOT_TOKEN) return res.status(400).json({ error: "Missing file_id or token" });
   try {
     // Essayer getFile d'abord (marche pour < 20MB)
-    const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
+    const fRes = await fetch(`https://locked-rolls-headphones-unexpected.trycloudflare.com/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
     const fData = await fRes.json();
     if (fData.ok && fData.result.file_path) {
-      const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
+      const url = `https://locked-rolls-headphones-unexpected.trycloudflare.com/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
       const r = await fetch(url);
       if (!r.ok) return res.status(404).json({ error: "File not found" });
       const ct = r.headers.get("content-type") || "application/octet-stream";
@@ -175,7 +175,7 @@ app.get("/media-id", async (req, res) => {
       return r.body.pipe(res);
     }
     // Fichier > 20MB — utiliser bot local download API
-    const dlRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
+    const dlRes = await fetch(`https://locked-rolls-headphones-unexpected.trycloudflare.com/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
     const dlData = await dlRes.json();
     if (!dlData.ok) return res.status(404).json({ error: "Cannot get file: " + dlData.description });
     res.status(400).json({ error: "File too large for Telegram API (>20MB)" });
@@ -238,13 +238,13 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     const form = new (require('form-data'))();
     form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
     form.append('document', req.file.buffer, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
-    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
+    const r = await fetch(`https://locked-rolls-headphones-unexpected.trycloudflare.com/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
     const data = await r.json();
     if (!data.ok) return res.status(500).json({ error: data.description });
     const fileId = data.result.document?.file_id || data.result.video?.file_id;
-    const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
+    const fRes = await fetch(`https://locked-rolls-headphones-unexpected.trycloudflare.com/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
     const fData = await fRes.json();
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
+    const url = `https://locked-rolls-headphones-unexpected.trycloudflare.com/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
     res.json({ url, fileId, type: req.file.mimetype.startsWith('video') ? 'video' : 'image' });
   } catch (err) {
     res.status(500).json({ error: err.message });
