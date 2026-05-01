@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tsengo-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: ONESIGNAL_APP_ID
+        value: 4906cf47-153d-4eac-bf4a-2d8ca0df0f26
+      - key: ONESIGNAL_REST_API_KEY
+        sync: false
