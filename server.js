@@ -189,7 +189,7 @@ app.post("/notify", async (req, res) => {
   if (NOTIFY_SECRET && req.headers["x-notify-secret"] !== NOTIFY_SECRET) {
     return res.status(403).json({ error: "Forbidden" });
   }
-  const { toExternalId, title, message, data } = req.body;
+  const { toExternalId, title, message, data, fromPhoto } = req.body;
   if (!toExternalId || !title || !message) {
     return res.status(400).json({ error: "toExternalId, title, message required" });
   }
@@ -217,7 +217,10 @@ app.post("/notify", async (req, res) => {
         headings: { en: title },
         contents: { en: message },
         url,
-        chrome_web_icon: `${FRONTEND_URL}/icon-192.png`,
+        chrome_web_icon: fromPhoto || `${FRONTEND_URL}/icon-192.png`,
+        chrome_web_badge: `${FRONTEND_URL}/icon-192.png`,
+        android_accent_color: 'FFE91E8C',
+        android_led_color: 'FFE91E8C',
         web_buttons: buttons,
         buttons,
       }),
