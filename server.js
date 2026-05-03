@@ -250,7 +250,7 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
     const fData = await fRes.json();
     const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
-    res.json({ url, fileId, type: req.file.mimetype.startsWith('video') ? 'video' : 'image' });
+    res.json({ url, fileId, type: req.file.mimetype.startsWith('video') ? 'video' : req.file.mimetype.startsWith('audio') ? 'audio' : 'image' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
