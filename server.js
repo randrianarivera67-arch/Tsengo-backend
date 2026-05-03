@@ -218,6 +218,8 @@ app.post("/notify", async (req, res) => {
         contents: { en: message },
         url,
         chrome_web_icon: fromPhoto || `${FRONTEND_URL}/icon-192.png`,
+        large_icon: fromPhoto && fromPhoto.startsWith('https') ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
+        small_icon: 'tsengo_icon',
         chrome_web_badge: `${FRONTEND_URL}/icon-192.png`,
         android_accent_color: 'FFE91E8C',
         android_led_color: 'FFE91E8C',
