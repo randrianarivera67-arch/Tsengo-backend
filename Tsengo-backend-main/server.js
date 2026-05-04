@@ -259,4 +259,6 @@ app.post("/notify", async (req, res) => {
   }
 });
 
+app.get("/health", (req, res) => res.json({ status: "ok", ts: Date.now() }));
+
 app.listen(PORT, () => console.log(`Tsengo backend running on port ${PORT}`));
