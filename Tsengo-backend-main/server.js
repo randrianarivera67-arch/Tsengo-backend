@@ -11,6 +11,19 @@ const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
 const NOTIFY_SECRET = process.env.NOTIFY_SECRET || "";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 
+// Cache file_path (55 min)
+const filePathCache = new Map();
+async function getTelegramFileUrl(file_id) {
+  const cached = filePathCache.get(file_id);
+  if (cached && Date.now() - cached.ts < 55 * 60 * 1000) return cached.url;
+  const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
+  const d = await r.json();
+  if (!d.ok || !d.result.file_path) throw new Error('Cannot get file: ' + (d.description || 'unknown'));
+  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${d.result.file_path}`;
+  filePathCache.set(file_id, { url, ts: Date.now() });
+  return url;
+}
+
 // ── YouTube OAuth2 config ──────────────────────────────────────────────────
 const YT_CLIENT_ID     = process.env.YOUTUBE_CLIENT_ID     || "";
 const YT_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET || "";
@@ -73,7 +86,7 @@ app.post("/youtube/token", async (req, res) => {
     // Sauvegarder le refresh_token propriétaire si c'est le premier
     if (data.refresh_token && !ownerRefreshToken) {
       ownerRefreshToken = data.refresh_token;
-      console.log("✅ YOUTUBE_REFRESH_TOKEN=" + data.refresh_token);
+      console.log("✅ YouTube refresh_token reçu — à ajouter en env YOUTUBE_REFRESH_TOKEN");
     }
     res.json(data);
   } catch (err) {
@@ -160,7 +173,24 @@ app.get("/media", async (req, res) => {
 // ✅ PROXY via file_id (fichiers > 20MB — getFile via bot puis stream)
 app.get("/media-id", async (req, res) => {
   const { file_id } = req.query;
-  if (!file_id || !BOT_TOKEN) return res.status(400).json({ error: "Missing file_id or token" });
+  if (!file_id || !BOT_TOKEN) return res.status(400).json({ error: "Missing file_id" });
+  try {
+    let url = await getTelegramFileUrl(file_id);
+    let r = await fetch(url);
+    if (!r.ok) {
+      filePathCache.delete(file_id);
+      url = await getTelegramFileUrl(file_id);
+      r = await fetch(url);
+      if (!r.ok) return res.status(404).json({ error: "File not found" });
+    }
+    const ct = r.headers.get("content-type") || "application/octet-stream";
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    r.body.pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
   try {
     // Essayer getFile d'abord (marche pour < 20MB)
     const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
@@ -230,23 +260,3 @@ app.post("/notify", async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Tsengo backend running on port ${PORT}`));
-
-// ✅ Telegram — Upload video lehibe (hatramin'ny 2GB)
-app.post("/telegram/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No file" });
-    const form = new (require('form-data'))();
-    form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
-    form.append('document', req.file.buffer, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
-    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
-    const data = await r.json();
-    if (!data.ok) return res.status(500).json({ error: data.description });
-    const fileId = data.result.document?.file_id || data.result.video?.file_id;
-    const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
-    const fData = await fRes.json();
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
-    res.json({ url, fileId, type: req.file.mimetype.startsWith('video') ? 'video' : 'image' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
