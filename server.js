@@ -243,6 +243,22 @@ app.post("/notify", async (req, res) => {
 });
 
 
+async function handleGramUpload(req, res) {
+  try {
+    if (!GRAM_CHANNEL) throw new Error("TELEGRAM_CHANNEL_ID not set");
+    const client = await getGramClient();
+    const isVideo = req.file.mimetype.startsWith("video");
+    const result = await client.sendFile(GRAM_CHANNEL, {
+      file: req.file.buffer, caption: "", workers: 4, forceDocument: !isVideo,
+    });
+    const BURL = process.env.BACKEND_URL || "https://tsengo-backend.onrender.com";
+    res.json({ url: BURL + "/stream/" + result.id, messageId: result.id, type: isVideo ? "video" : "file" });
+  } catch(err) {
+    console.error("GramJS upload error:", err.message);
+    res.status(500).json({ error: "GramJS: " + err.message });
+  }
+}
+
 app.post("/telegram/upload-large", require("multer")({ storage: require("multer").memoryStorage(), limits: { fileSize: 500*1024*1024 } }).single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
   try {
@@ -323,6 +339,16 @@ app.listen(PORT, () => console.log(`Tsengo backend running on port ${PORT}`));
 
 // ✅ Telegram — Upload video lehibe (hatramin'ny 2GB)
 app.post("/telegram/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  // Auto-route: video >= 19MB → GramJS
+  if (req.file.size >= 19 * 1024 * 1024 && req.file.mimetype.startsWith("video")) {
+    return handleGramUpload(req, res);
+  }
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  // Auto-route: video >= 19MB → GramJS
+  if (req.file.size >= 19 * 1024 * 1024 && req.file.mimetype.startsWith("video")) {
+    return handleGramUpload(req, res);
+  }
   try {
     if (!req.file) return res.status(400).json({ error: "No file" });
     const form = new (require('form-data'))();
