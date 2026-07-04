@@ -71,9 +71,7 @@ async function getOwnerAccessToken() {
   return ownerAccessToken;
 }
 
-app.use(cors({
-  origin: [FRONTEND_URL, "https://tsengo.vercel.app", "http://localhost:5173"],
-}));
+app.use(cors({ origin: true }));
 app.use(express.json({ limit: "10kb" }));
 
 
@@ -85,7 +83,7 @@ setInterval(async () => {
 }, 14 * 60 * 1000);
 
 app.get("/", (req, res) => {
-  res.json({ status: "Tsengo Backend OK 🌸", version: "6.0.0" });
+  res.json({ status: "Traingo Backend OK 💠", version: "6.0.0" });
 });
 
 // ✅ YouTube — Exchange code → access_token + refresh_token
@@ -119,7 +117,7 @@ app.post("/youtube/token", async (req, res) => {
 // ✅ YouTube — Upload video (server-side, compte propriétaire)
 app.post("/youtube/upload", upload.single("video"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No video file" });
-  const title = req.body.title || `Tsengo_${Date.now()}`;
+  const title = req.body.title || `Traingo_${Date.now()}`;
 
   try {
     const token = await getOwnerAccessToken();
@@ -136,7 +134,7 @@ app.post("/youtube/upload", upload.single("video"), async (req, res) => {
           "X-Upload-Content-Length": req.file.size,
         },
         body: JSON.stringify({
-          snippet: { title, description: "Partagé via Tsengo", categoryId: "22" },
+          snippet: { title, description: "Partagé via Traingo", categoryId: "22" },
           status:  { privacyStatus: "unlisted" },
         }),
       }
@@ -362,32 +360,25 @@ app.get("/stream/:messageId", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Tsengo backend running on port ${PORT}`));
-
 // ✅ Telegram — Upload video lehibe (hatramin'ny 2GB)
 app.post("/telegram/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
-  // Auto-route: video >= 19MB → GramJS
-  if (req.file.size >= 19 * 1024 * 1024 && req.file.mimetype.startsWith("video")) {
-    return handleGramUpload(req, res);
-  }
-  if (!req.file) return res.status(400).json({ error: "No file" });
-  // Auto-route: video >= 19MB → GramJS
+  // Auto-route: video >= 19MB → GramJS (2GB max)
   if (req.file.size >= 19 * 1024 * 1024 && req.file.mimetype.startsWith("video")) {
     return handleGramUpload(req, res);
   }
   try {
-    if (!req.file) return res.status(400).json({ error: "No file" });
     const form = new (require('form-data'))();
     form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
     form.append('document', req.file.buffer, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
     const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
     const data = await r.json();
-    if (!data.ok) return res.status(500).json({ error: data.description });
+    if (!data.ok) {
+      if (req.file.mimetype.startsWith("video")) return handleGramUpload(req, res);
+      return res.status(500).json({ error: data.description });
+    }
     const fileId = data.result.document?.file_id || data.result.video?.file_id;
-    const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
-    const fData = await fRes.json();
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
+    if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
     const type = req.file.mimetype.startsWith('video') ? 'video' : req.file.mimetype.startsWith('audio') ? 'audio' : 'image';
     const proxyUrl = `${process.env.BACKEND_URL || 'https://tsengo-backend.onrender.com'}/media-id?file_id=${fileId}`;
     res.json({ url: proxyUrl, fileId, type });
@@ -395,3 +386,14 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Erreurs Multer et génériques -> toujours du JSON lisible par le frontend
+app.use((err, req, res, next) => {
+  console.error("Server error:", err.message);
+  if (err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ error: "Fichier trop volumineux (max 500 Mo)" });
+  }
+  res.status(500).json({ error: err.message || "Erreur serveur" });
+});
+
+app.listen(PORT, () => console.log(`Traingo backend running on port ${PORT}`));
