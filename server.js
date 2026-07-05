@@ -256,6 +256,8 @@ app.post("/notify", async (req, res) => {
         app_id: ONESIGNAL_APP_ID,
         include_aliases: { external_id: [toExternalId] },
         target_channel: "push",
+        priority: 10,
+        ttl: 259200,
         headings: { en: title },
         contents: { en: message },
         url,
@@ -508,15 +510,15 @@ function getChunkFile(fileId, res = null, winStart = 0, winEnd = -1) {
     let size = 0, posIn = 0, streamed = !!res;
     for await (const piece of dl.body) {
       const b = Buffer.from(piece);
-      ws.write(b);
+      if (!ws.write(b)) await new Promise(r => ws.once("drain", r));
       size += b.length;
-      // Tee : alefa avy hatrany ny ampahany ilaina
+      // Tee : alefa avy hatrany ny ampahany ilaina (misy backpressure)
       if (res && res.writable && winEnd >= 0) {
         const pStart = posIn, pEnd = posIn + b.length - 1;
         if (pEnd >= winStart && pStart <= winEnd) {
           const s0 = Math.max(0, winStart - pStart);
           const e0 = Math.min(b.length, winEnd - pStart + 1);
-          res.write(b.slice(s0, e0));
+          if (!res.write(b.slice(s0, e0))) await new Promise(r => res.once("drain", r));
         }
       }
       posIn += b.length;
@@ -566,8 +568,8 @@ app.get("/chunked", async (req, res) => {
       const readStart = pos - cStart;
       const readEnd = Math.min(end, cEnd) - cStart;
       // Préchargement ny morceaux 2 manaraka (arrière-plan) — lecture fluide
-      for (let k = 1; k <= 2; k++) {
-        if (i + k < ids.length && offsets[i + k] <= end + 40 * 1024 * 1024) getChunkFile(ids[i + k]).catch(() => {});
+      for (let k = 1; k <= 3; k++) {
+        if (i + k < ids.length && offsets[i + k] <= end + 60 * 1024 * 1024) getChunkFile(ids[i + k]).catch(() => {});
       }
       // Tee : raha mbola tsy ao amin'ny cache dia alefa MIVANTANA eo am-pakana azy
       const got = await getChunkFile(ids[i], res, readStart, readEnd);
