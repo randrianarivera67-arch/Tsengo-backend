@@ -467,7 +467,52 @@ async function getChunkPath(fileId) {
   return fData.result.file_path;
 }
 
-// Lecture : mandrafitra ny morceaux ho vidéo TOKANA (misy Range/seek)
+// ── Cache DISQUE ny morceaux (lecture fluide, seek instantané) ──
+const pathMod = require("path");
+const CHUNK_CACHE_DIR = pathMod.join(osMod.tmpdir(), "traingo-chunk-cache");
+try { fsMod.mkdirSync(CHUNK_CACHE_DIR, { recursive: true }); } catch {}
+const chunkCacheIndex = new Map();      // fileId -> { file, size, ts }
+const chunkDownloads  = new Map();      // fileId -> Promise (tsy miverina indroa)
+const CHUNK_CACHE_MAX = 400 * 1024 * 1024; // 400 Mo farafahabetsany /tmp
+
+function pruneChunkCache() {
+  let total = 0;
+  const entries = [...chunkCacheIndex.entries()].sort((a, b) => a[1].ts - b[1].ts);
+  for (const [, v] of entries) total += v.size;
+  while (total > CHUNK_CACHE_MAX && entries.length) {
+    const [fid, v] = entries.shift();
+    try { fsMod.unlinkSync(v.file); } catch {}
+    chunkCacheIndex.delete(fid);
+    total -= v.size;
+  }
+}
+
+// Maka morceau iray -> fichier local (cache). Ny fangatahana mitovy dia miandry ilay iray ihany.
+function getChunkFile(fileId) {
+  const hit = chunkCacheIndex.get(fileId);
+  if (hit && fsMod.existsSync(hit.file)) { hit.ts = Date.now(); return Promise.resolve(hit.file); }
+  if (chunkDownloads.has(fileId)) return chunkDownloads.get(fileId);
+  const prom = (async () => {
+    const tPath = await getChunkPath(fileId);
+    const dl = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${tPath}`);
+    if (!dl.ok || !dl.body) throw new Error("Téléchargement du morceau échoué");
+    const safe = require("crypto").createHash("md5").update(fileId).digest("hex");
+    const dest = pathMod.join(CHUNK_CACHE_DIR, safe + ".part");
+    const tmp = dest + ".dl";
+    const ws = fsMod.createWriteStream(tmp);
+    let size = 0;
+    for await (const piece of dl.body) { const b = Buffer.from(piece); size += b.length; ws.write(b); }
+    await new Promise((ok, ko) => ws.end(err => err ? ko(err) : ok()));
+    fsMod.renameSync(tmp, dest);
+    chunkCacheIndex.set(fileId, { file: dest, size, ts: Date.now() });
+    pruneChunkCache();
+    return dest;
+  })().finally(() => chunkDownloads.delete(fileId));
+  chunkDownloads.set(fileId, prom);
+  return prom;
+}
+
+// Lecture : mandrafitra ny morceaux ho vidéo TOKANA (Range/seek — avy amin'ny cache disque)
 app.get("/chunked", async (req, res) => {
   try {
     const ids = String(req.query.ids || "").split(",").filter(Boolean);
@@ -499,22 +544,20 @@ app.get("/chunked", async (req, res) => {
       const cStart = offsets[i], cEnd = offsets[i] + sizes[i] - 1;
       if (cEnd < pos) continue;
       if (cStart > end) break;
-      const path = await getChunkPath(ids[i]);
-      const dl = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${path}`);
-      if (!dl.ok || !dl.body) throw new Error("Téléchargement du morceau échoué");
-      let inChunkPos = cStart;
-      for await (const piece of dl.body) {
-        if (!res.writable) return;
-        const buf = Buffer.from(piece);
-        if (inChunkPos + buf.length <= pos) { inChunkPos += buf.length; continue; }
-        let s0 = inChunkPos < pos ? pos - inChunkPos : 0;
-        let e0 = buf.length;
-        if (inChunkPos + buf.length - 1 > end) e0 = end - inChunkPos + 1;
-        res.write(buf.slice(s0, e0));
-        pos = inChunkPos + e0;
-        inChunkPos += buf.length;
-        if (pos > end) break;
-      }
+      const localFile = await getChunkFile(ids[i]);
+      // Préchargement ny morceau manaraka (arrière-plan) mba ho fluid ny lecture
+      if (i + 1 < ids.length && offsets[i + 1] <= end) getChunkFile(ids[i + 1]).catch(() => {});
+      const readStart = pos - cStart;
+      const readEnd = Math.min(end, cEnd) - cStart;
+      await new Promise((ok, ko) => {
+        const rs = fsMod.createReadStream(localFile, { start: readStart, end: readEnd });
+        rs.on("error", ko);
+        rs.on("end", ok);
+        rs.pipe(res, { end: false });
+        res.on("close", () => { rs.destroy(); ok(); });
+      });
+      pos = Math.min(end, cEnd) + 1;
+      if (!res.writable) return;
     }
     res.end();
   } catch (err) {
