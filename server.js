@@ -394,7 +394,7 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ UPLOAD EN MORCEAUX — vidéo jusqu'à 100 Mo via Bot API (sans GramJS)
+// ✅ UPLOAD EN MORCEAUX — vidéo jusqu'à 500 Mo via Bot API (sans GramJS)
 // Frontend manapaka ny vidéo ho morceaux ≤18MB → alefa tsirairay →
 // Telegram mitahiry → /chunked mandrafitra azy ho vidéo TOKANA amin'ny lecture
 // ═══════════════════════════════════════════════════════════════
@@ -408,7 +408,7 @@ const filePathCache = new Map(); // fileId -> { path, ts } (lalana Telegram, man
 app.post("/chunk/init", (req, res) => {
   const { total, mime, name } = req.body || {};
   const t = Number(total);
-  if (!t || t < 1 || t > 12) return res.status(400).json({ error: "Nombre de morceaux invalide (max 12 = 100 Mo)" });
+  if (!t || t < 1 || t > 30) return res.status(400).json({ error: "Nombre de morceaux invalide (max 30 = 500 Mo)" });
   const uploadId = require("crypto").randomBytes(16).toString("hex");
   chunkSessions.set(uploadId, { total: t, mime: mime || "video/mp4", name: name || "video.mp4", chunks: {}, ts: Date.now() });
   res.json({ uploadId });
@@ -473,7 +473,7 @@ const CHUNK_CACHE_DIR = pathMod.join(osMod.tmpdir(), "traingo-chunk-cache");
 try { fsMod.mkdirSync(CHUNK_CACHE_DIR, { recursive: true }); } catch {}
 const chunkCacheIndex = new Map();      // fileId -> { file, size, ts }
 const chunkDownloads  = new Map();      // fileId -> Promise (tsy miverina indroa)
-const CHUNK_CACHE_MAX = 400 * 1024 * 1024; // 400 Mo farafahabetsany /tmp
+const CHUNK_CACHE_MAX = 1200 * 1024 * 1024; // 1,2 Go farafahabetsany /tmp (video 500 Mo + hafa)
 
 function pruneChunkCache() {
   let total = 0;
