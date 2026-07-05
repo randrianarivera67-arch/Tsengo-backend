@@ -271,6 +271,34 @@ app.post("/reply", async (req, res) => {
     };
     await admin.database().ref(`conversations/${conversationId}/messages`).push(msg);
     await admin.database().ref(`conversations/${conversationId}/meta`).update({ lastMessage: msg.text, lastTs: msg.ts }).catch(() => {});
+
+    // Ampandrenesina ilay nandefa fa nisy valiny
+    if (otherUid) {
+      try {
+        const oSnap = await admin.firestore().doc(`users/${otherUid}`).get();
+        const oTokens = (oSnap.exists && oSnap.data().fcmTokens) || [];
+        if (oTokens.length) {
+          await admin.messaging().sendEachForMulticast({
+            tokens: oTokens,
+            notification: { title: msg.fromName, body: msg.text },
+            data: { title: msg.fromName, body: msg.text, icon: msg.fromPhoto || `${FRONTEND_URL}/icon-192.png`, type: "message", conversationId, url: `${FRONTEND_URL}/messages/${conversationId}`, meUid: otherUid, otherUid: meUid, canReply: "1", ns: NOTIFY_SECRET || "" },
+            android: { priority: "high" },
+            webpush: {
+              headers: { Urgency: "high" },
+              fcmOptions: { link: `${FRONTEND_URL}/messages/${conversationId}` },
+              notification: {
+                title: msg.fromName, body: msg.text,
+                icon: msg.fromPhoto && msg.fromPhoto.startsWith("http") ? msg.fromPhoto : `${FRONTEND_URL}/icon-192.png`,
+                badge: `${FRONTEND_URL}/icon-96.png`,
+                vibrate: [250, 120, 250],
+                tag: `msg_${conversationId}`, renotify: true,
+                actions: [{ action: "reply", type: "text", title: "Répondre", placeholder: "Votre message..." }, { action: "close", title: "Fermer" }],
+              },
+            },
+          });
+        }
+      } catch (e) { console.warn("reply notify:", e.message); }
+    }
     res.json({ success: true });
   } catch (err) {
     console.error("reply:", err.message);
@@ -323,6 +351,7 @@ app.post("/notify", async (req, res) => {
         type: notifType, conversationId, postId, url,
         meUid: toExternalId, otherUid,
         canReply: isMsg ? "1" : "",
+        ns: NOTIFY_SECRET || "",
       }).map(([k, v]) => [k, String(v || "")])),
       android: { priority: "high" },
       webpush: {
@@ -650,9 +679,7 @@ app.get("/chunked", async (req, res) => {
       const readStart = pos - cStart;
       const readEnd = Math.min(end, cEnd) - cStart;
       // Préchargement ny morceaux 2 manaraka (arrière-plan) — lecture fluide
-      for (let k = 1; k <= 3; k++) {
-        if (i + k < ids.length && offsets[i + k] <= end + 60 * 1024 * 1024) getChunkFile(ids[i + k]).catch(() => {});
-      }
+      if (i + 1 < ids.length && offsets[i + 1] <= end + 40 * 1024 * 1024) getChunkFile(ids[i + 1]).catch(() => {});
       // Tee : raha mbola tsy ao amin'ny cache dia alefa MIVANTANA eo am-pakana azy
       const got = await getChunkFile(ids[i], res, readStart, readEnd);
       if (!got.streamed) {
