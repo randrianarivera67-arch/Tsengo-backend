@@ -307,23 +307,39 @@ app.post("/notify", async (req, res) => {
       ? conversationId.split("_").find(u => u !== toExternalId) || ""
       : "";
 
-    // DATA-ONLY : ny service worker irery no mampiseho (tsy miverina indroa intsony)
+    const iconUrl = (fromPhoto && String(fromPhoto).startsWith("http")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`;
+    const isMsg = notifType === "message";
+    const actions = isMsg
+      ? [{ action: "reply", type: "text", title: "Répondre", placeholder: "Votre message..." }, { action: "close", title: "Fermer" }]
+      : [{ action: "open", title: "Voir" }, { action: "close", title: "Fermer" }];
+
+    // HYBRIDE : "notification" = aseho HO AZY na mikatona tanteraka aza ny app
+    // (io no antoka fa tonga foana) ; ny SW dia tsy mampiseho intsony (tsy misy doublon)
     const result = await admin.messaging().sendEachForMulticast({
       tokens,
+      notification: { title, body: message },
       data: Object.fromEntries(Object.entries({
-        title,
-        body: message,
-        icon: (fromPhoto && String(fromPhoto).startsWith("http")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
-        type: notifType,
-        conversationId,
-        postId,
-        url,
-        meUid: toExternalId,          // ilay mandray (ho an'ny réponse)
-        otherUid,                     // ilay nandefa
-        canReply: notifType === "message" ? "1" : "",
+        title, body: message, icon: iconUrl,
+        type: notifType, conversationId, postId, url,
+        meUid: toExternalId, otherUid,
+        canReply: isMsg ? "1" : "",
       }).map(([k, v]) => [k, String(v || "")])),
       android: { priority: "high" },
-      webpush: { headers: { Urgency: "high", TTL: "259200" } },
+      webpush: {
+        headers: { Urgency: "high", TTL: "259200" },
+        fcmOptions: { link: url },
+        notification: {
+          title,
+          body: message,
+          icon: iconUrl,
+          badge: `${FRONTEND_URL}/icon-96.png`,
+          vibrate: [250, 120, 250],
+          tag: isMsg ? `msg_${conversationId}` : undefined,
+          renotify: isMsg || undefined,
+          requireInteraction: isMsg || undefined,
+          actions,
+        },
+      },
     });
 
     // Fanadiovana ny tokens maty (appareil niala / cache voafafa)
