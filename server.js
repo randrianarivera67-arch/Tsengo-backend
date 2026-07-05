@@ -393,6 +393,137 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ UPLOAD EN MORCEAUX — vidéo jusqu'à 100 Mo via Bot API (sans GramJS)
+// Frontend manapaka ny vidéo ho morceaux ≤18MB → alefa tsirairay →
+// Telegram mitahiry → /chunked mandrafitra azy ho vidéo TOKANA amin'ny lecture
+// ═══════════════════════════════════════════════════════════════
+const chunkSessions = new Map(); // uploadId -> { total, mime, name, chunks, ts }
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of chunkSessions) if (now - v.ts > 60 * 60 * 1000) chunkSessions.delete(k);
+}, 10 * 60 * 1000);
+const filePathCache = new Map(); // fileId -> { path, ts } (lalana Telegram, manan-kery ~1h)
+
+app.post("/chunk/init", (req, res) => {
+  const { total, mime, name } = req.body || {};
+  const t = Number(total);
+  if (!t || t < 1 || t > 12) return res.status(400).json({ error: "Nombre de morceaux invalide (max 12 = 100 Mo)" });
+  const uploadId = require("crypto").randomBytes(16).toString("hex");
+  chunkSessions.set(uploadId, { total: t, mime: mime || "video/mp4", name: name || "video.mp4", chunks: {}, ts: Date.now() });
+  res.json({ uploadId });
+});
+
+app.post("/chunk/upload", upload.single("file"), async (req, res) => {
+  const { uploadId, index } = req.body || {};
+  const sess = chunkSessions.get(uploadId);
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file" });
+    if (!sess) return res.status(410).json({ error: "Session d'upload expirée — relancez l'envoi" });
+    const idx = Number(index);
+    if (isNaN(idx) || idx < 0 || idx >= sess.total) return res.status(400).json({ error: "Index invalide" });
+    sess.ts = Date.now();
+    const form = new (require("form-data"))();
+    form.append("chat_id", process.env.TELEGRAM_CHAT_ID);
+    const buf = req.file.buffer || fsMod.readFileSync(req.file.path);
+    form.append("document", buf, { filename: `traingo_${uploadId}_${idx}.part`, contentType: "application/octet-stream" });
+    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: "POST", body: form, headers: form.getHeaders() });
+    const data = await r.json();
+    if (!data.ok) return res.status(500).json({ error: data.description || "Erreur Telegram" });
+    const fileId = data.result.document?.file_id;
+    if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
+    sess.chunks[idx] = { fileId, size: req.file.size };
+    res.json({ ok: true, index: idx, received: Object.keys(sess.chunks).length, total: sess.total });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    cleanupUpload(req);
+  }
+});
+
+app.post("/chunk/complete", (req, res) => {
+  const { uploadId } = req.body || {};
+  const sess = chunkSessions.get(uploadId);
+  if (!sess) return res.status(410).json({ error: "Session expirée" });
+  const ids = [], sizes = [];
+  for (let i = 0; i < sess.total; i++) {
+    if (!sess.chunks[i]) return res.status(400).json({ error: `Morceau ${i + 1}/${sess.total} manquant` });
+    ids.push(sess.chunks[i].fileId);
+    sizes.push(sess.chunks[i].size);
+  }
+  chunkSessions.delete(uploadId);
+  const BURL = process.env.BACKEND_URL || "https://tsengo-backend.onrender.com";
+  const url = `${BURL}/chunked?ids=${ids.join(",")}&sizes=${sizes.join(",")}&mime=${encodeURIComponent(sess.mime)}`;
+  res.json({ url, type: sess.mime.startsWith("video") ? "video" : "file" });
+});
+
+async function getChunkPath(fileId) {
+  const cached = filePathCache.get(fileId);
+  if (cached && Date.now() - cached.ts < 50 * 60 * 1000) return cached.path;
+  const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`);
+  const fData = await fRes.json();
+  if (!fData.ok || !fData.result?.file_path) throw new Error("Morceau introuvable sur Telegram");
+  filePathCache.set(fileId, { path: fData.result.file_path, ts: Date.now() });
+  return fData.result.file_path;
+}
+
+// Lecture : mandrafitra ny morceaux ho vidéo TOKANA (misy Range/seek)
+app.get("/chunked", async (req, res) => {
+  try {
+    const ids = String(req.query.ids || "").split(",").filter(Boolean);
+    const sizes = String(req.query.sizes || "").split(",").map(n => parseInt(n) || 0);
+    const mime = String(req.query.mime || "video/mp4");
+    if (!ids.length || ids.length !== sizes.length) return res.status(400).json({ error: "Paramètres invalides" });
+    const totalSize = sizes.reduce((a, b) => a + b, 0);
+    const offsets = []; let acc = 0;
+    for (const sz of sizes) { offsets.push(acc); acc += sz; }
+
+    const range = req.headers.range;
+    let start = 0, end = totalSize - 1;
+    if (range) {
+      const m = range.match(/bytes=(\d+)-(\d*)/);
+      if (m) { start = parseInt(m[1]) || 0; end = m[2] ? Math.min(parseInt(m[2]), totalSize - 1) : totalSize - 1; }
+    }
+    if (start >= totalSize) return res.status(416).end();
+
+    res.writeHead(range ? 206 : 200, {
+      "Content-Type": mime,
+      "Accept-Ranges": "bytes",
+      "Content-Length": end - start + 1,
+      ...(range ? { "Content-Range": `bytes ${start}-${end}/${totalSize}` } : {}),
+      "Cache-Control": "public, max-age=86400",
+    });
+
+    let pos = start;
+    for (let i = 0; i < ids.length && pos <= end; i++) {
+      const cStart = offsets[i], cEnd = offsets[i] + sizes[i] - 1;
+      if (cEnd < pos) continue;
+      if (cStart > end) break;
+      const path = await getChunkPath(ids[i]);
+      const dl = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${path}`);
+      if (!dl.ok || !dl.body) throw new Error("Téléchargement du morceau échoué");
+      let inChunkPos = cStart;
+      for await (const piece of dl.body) {
+        if (!res.writable) return;
+        const buf = Buffer.from(piece);
+        if (inChunkPos + buf.length <= pos) { inChunkPos += buf.length; continue; }
+        let s0 = inChunkPos < pos ? pos - inChunkPos : 0;
+        let e0 = buf.length;
+        if (inChunkPos + buf.length - 1 > end) e0 = end - inChunkPos + 1;
+        res.write(buf.slice(s0, e0));
+        pos = inChunkPos + e0;
+        inChunkPos += buf.length;
+        if (pos > end) break;
+      }
+    }
+    res.end();
+  } catch (err) {
+    console.error("chunked stream:", err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  }
+});
+
 // Erreurs Multer et génériques -> toujours du JSON lisible par le frontend
 app.use((err, req, res, next) => {
   console.error("Server error:", err.message);
