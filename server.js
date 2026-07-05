@@ -487,26 +487,45 @@ function pruneChunkCache() {
   }
 }
 
-// Maka morceau iray -> fichier local (cache). Ny fangatahana mitovy dia miandry ilay iray ihany.
-function getChunkFile(fileId) {
+// Maka morceau iray -> fichier local (cache). res (optionnel) : alefa MIVANTANA
+// any amin'ny mpijery ny fenêtre [winStart..winEnd] eo am-pakana azy (tee) —
+// tsy miandry ny 18 Mo ho feno intsony vao manomboka ny lecture.
+function getChunkFile(fileId, res = null, winStart = 0, winEnd = -1) {
   const hit = chunkCacheIndex.get(fileId);
-  if (hit && fsMod.existsSync(hit.file)) { hit.ts = Date.now(); return Promise.resolve(hit.file); }
-  if (chunkDownloads.has(fileId)) return chunkDownloads.get(fileId);
+  if (hit && fsMod.existsSync(hit.file)) { hit.ts = Date.now(); return Promise.resolve({ file: hit.file, streamed: false }); }
+  if (chunkDownloads.has(fileId)) {
+    // Efa misy téléchargement mandeha : miandry azy dia avy amin'ny disque
+    return chunkDownloads.get(fileId).then(r => ({ file: r.file, streamed: false }));
+  }
   const prom = (async () => {
     const tPath = await getChunkPath(fileId);
     const dl = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${tPath}`);
     if (!dl.ok || !dl.body) throw new Error("Téléchargement du morceau échoué");
     const safe = require("crypto").createHash("md5").update(fileId).digest("hex");
     const dest = pathMod.join(CHUNK_CACHE_DIR, safe + ".part");
-    const tmp = dest + ".dl";
+    const tmp = dest + ".dl" + Math.random().toString(36).slice(2, 7);
     const ws = fsMod.createWriteStream(tmp);
-    let size = 0;
-    for await (const piece of dl.body) { const b = Buffer.from(piece); size += b.length; ws.write(b); }
+    let size = 0, posIn = 0, streamed = !!res;
+    for await (const piece of dl.body) {
+      const b = Buffer.from(piece);
+      ws.write(b);
+      size += b.length;
+      // Tee : alefa avy hatrany ny ampahany ilaina
+      if (res && res.writable && winEnd >= 0) {
+        const pStart = posIn, pEnd = posIn + b.length - 1;
+        if (pEnd >= winStart && pStart <= winEnd) {
+          const s0 = Math.max(0, winStart - pStart);
+          const e0 = Math.min(b.length, winEnd - pStart + 1);
+          res.write(b.slice(s0, e0));
+        }
+      }
+      posIn += b.length;
+    }
     await new Promise((ok, ko) => ws.end(err => err ? ko(err) : ok()));
-    fsMod.renameSync(tmp, dest);
+    try { fsMod.renameSync(tmp, dest); } catch {}
     chunkCacheIndex.set(fileId, { file: dest, size, ts: Date.now() });
     pruneChunkCache();
-    return dest;
+    return { file: dest, streamed };
   })().finally(() => chunkDownloads.delete(fileId));
   chunkDownloads.set(fileId, prom);
   return prom;
@@ -544,18 +563,23 @@ app.get("/chunked", async (req, res) => {
       const cStart = offsets[i], cEnd = offsets[i] + sizes[i] - 1;
       if (cEnd < pos) continue;
       if (cStart > end) break;
-      const localFile = await getChunkFile(ids[i]);
-      // Préchargement ny morceau manaraka (arrière-plan) mba ho fluid ny lecture
-      if (i + 1 < ids.length && offsets[i + 1] <= end) getChunkFile(ids[i + 1]).catch(() => {});
       const readStart = pos - cStart;
       const readEnd = Math.min(end, cEnd) - cStart;
-      await new Promise((ok, ko) => {
-        const rs = fsMod.createReadStream(localFile, { start: readStart, end: readEnd });
-        rs.on("error", ko);
-        rs.on("end", ok);
-        rs.pipe(res, { end: false });
-        res.on("close", () => { rs.destroy(); ok(); });
-      });
+      // Préchargement ny morceaux 2 manaraka (arrière-plan) — lecture fluide
+      for (let k = 1; k <= 2; k++) {
+        if (i + k < ids.length && offsets[i + k] <= end + 40 * 1024 * 1024) getChunkFile(ids[i + k]).catch(() => {});
+      }
+      // Tee : raha mbola tsy ao amin'ny cache dia alefa MIVANTANA eo am-pakana azy
+      const got = await getChunkFile(ids[i], res, readStart, readEnd);
+      if (!got.streamed) {
+        await new Promise((ok, ko) => {
+          const rs = fsMod.createReadStream(got.file, { start: readStart, end: readEnd });
+          rs.on("error", ko);
+          rs.on("end", ok);
+          rs.pipe(res, { end: false });
+          res.on("close", () => { rs.destroy(); ok(); });
+        });
+      }
       pos = Math.min(end, cEnd) + 1;
       if (!res.writable) return;
     }
