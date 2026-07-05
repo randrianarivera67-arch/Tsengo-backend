@@ -44,7 +44,15 @@ const YT_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET || "";
 const YT_REDIRECT_URI  = process.env.YOUTUBE_REDIRECT_URI  || `${FRONTEND_URL}/oauth/callback`;
 
 // Multer : video en mémoire (max 500MB)
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+const fsMod = require("fs");
+const osMod = require("os");
+const TMP_DIR = require("path").join(osMod.tmpdir(), "traingo-uploads");
+try { fsMod.mkdirSync(TMP_DIR, { recursive: true }); } catch {}
+// Disque fa tsy RAM : ny fichier 300MB dia tsy mameno ny mémoire an'ny Render intsony
+const upload = multer({ storage: multer.diskStorage({ destination: TMP_DIR }), limits: { fileSize: 320 * 1024 * 1024 } });
+function cleanupUpload(req) {
+  if (req?.file?.path) fsMod.unlink(req.file.path, () => {});
+}
 
 // Token YouTube du compte propriétaire (rafraîchi automatiquement)
 let ownerRefreshToken = process.env.YOUTUBE_REFRESH_TOKEN || "";
@@ -152,7 +160,7 @@ app.post("/youtube/upload", upload.single("video"), async (req, res) => {
     const upRes = await fetch(uploadUrl, {
       method: "PUT",
       headers: { "Content-Type": req.file.mimetype || "video/mp4" },
-      body: req.file.buffer,
+      body: req.file.buffer || fsMod.readFileSync(req.file.path),
     });
 
     if (!upRes.ok) {
@@ -271,41 +279,34 @@ app.post("/notify", async (req, res) => {
 
 async function handleGramUpload(req, res) {
   try {
-    if (!GRAM_CHANNEL) throw new Error("TELEGRAM_CHANNEL_ID not set");
+    if (!GRAM_CHANNEL) throw new Error("Vidéo volumineuse : TELEGRAM_CHANNEL_ID / session GramJS non configurés sur le serveur");
     const client = await getGramClient();
     const isVideo = req.file.mimetype.startsWith("video");
+    const { CustomFile } = require("telegram/client/uploads");
+    // Streaming avy amin'ny disque — tsy mandany RAM na dia 300MB aza
+    const fileToSend = req.file.path
+      ? new CustomFile(req.file.originalname || "video.mp4", req.file.size, req.file.path)
+      : req.file.buffer;
     const result = await client.sendFile(GRAM_CHANNEL, {
-      file: req.file.buffer, caption: "", workers: 4, forceDocument: !isVideo,
+      file: fileToSend,
+      caption: "",
+      workers: 8,
+      forceDocument: !isVideo,
+      ...(isVideo ? { attributes: [new Api.DocumentAttributeVideo({ duration: 0, w: 0, h: 0, supportsStreaming: true })] } : {}),
     });
     const BURL = process.env.BACKEND_URL || "https://tsengo-backend.onrender.com";
     res.json({ url: BURL + "/stream/" + result.id, messageId: result.id, type: isVideo ? "video" : "file" });
   } catch(err) {
     console.error("GramJS upload error:", err.message);
     res.status(500).json({ error: "GramJS: " + err.message });
+  } finally {
+    cleanupUpload(req);
   }
 }
 
-app.post("/telegram/upload-large", require("multer")({ storage: require("multer").memoryStorage(), limits: { fileSize: 500*1024*1024 } }).single("file"), async (req, res) => {
+app.post("/telegram/upload-large", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
-  try {
-    if (!GRAM_CHANNEL) throw new Error("TELEGRAM_CHANNEL_ID not set");
-    const client = await getGramClient();
-    const isVideo = req.file.mimetype.startsWith("video");
-    const result = await client.sendFile(GRAM_CHANNEL, {
-      file: req.file.buffer,
-      caption: "",
-      workers: 4,
-      forceDocument: !isVideo,
-    });
-    res.json({
-      url: (process.env.BACKEND_URL || "https://tsengo-backend.onrender.com") + "/stream/" + result.id,
-      messageId: result.id,
-      type: isVideo ? "video" : "file",
-    });
-  } catch(err) {
-    console.error("GramJS upload error:", err);
-    res.status(500).json({ error: "GramJS: " + err.message });
-  }
+  return handleGramUpload(req, res);
 });
 
 app.get("/stream/:messageId", async (req, res) => {
@@ -371,7 +372,9 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
   try {
     const form = new (require('form-data'))();
     form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
-    form.append('document', req.file.buffer, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
+    // diskStorage : mamaky avy amin'ny fichier (kely < 19MB ka tsy olana)
+    const fileBuf = req.file.buffer || fsMod.readFileSync(req.file.path);
+    form.append('document', fileBuf, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
     const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
     const data = await r.json();
     if (!data.ok) {
@@ -382,8 +385,10 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
     const type = req.file.mimetype.startsWith('video') ? 'video' : req.file.mimetype.startsWith('audio') ? 'audio' : 'image';
     const proxyUrl = `${process.env.BACKEND_URL || 'https://tsengo-backend.onrender.com'}/media-id?file_id=${fileId}`;
+    cleanupUpload(req);
     res.json({ url: proxyUrl, fileId, type });
   } catch (err) {
+    cleanupUpload(req);
     res.status(500).json({ error: err.message });
   }
 });
@@ -392,7 +397,7 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
 app.use((err, req, res, next) => {
   console.error("Server error:", err.message);
   if (err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({ error: "Fichier trop volumineux (max 500 Mo)" });
+    return res.status(413).json({ error: "Fichier trop volumineux (max 300 Mo)" });
   }
   res.status(500).json({ error: err.message || "Erreur serveur" });
 });
