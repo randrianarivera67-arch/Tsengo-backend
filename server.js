@@ -82,6 +82,21 @@ async function getOwnerAccessToken() {
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "10kb" }));
 
+// ═══ Firebase Admin (FCM push notifications — misolo ny OneSignal) ═══
+const admin = require("firebase-admin");
+let fcmReady = false;
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
+    fcmReady = true;
+    console.log("✅ Firebase Admin (FCM) prêt");
+  } else {
+    console.warn("⚠️ FIREBASE_SERVICE_ACCOUNT manquant — push FCM désactivé");
+  }
+} catch (e) {
+  console.error("Firebase Admin init:", e.message);
+}
+
 
 app.get("/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
 const BACKEND_URL = process.env.BACKEND_URL || "https://tsengo-backend.onrender.com";
@@ -234,46 +249,57 @@ app.post("/notify", async (req, res) => {
   if (!toExternalId || !title || !message) {
     return res.status(400).json({ error: "toExternalId, title, message required" });
   }
-  if (!ONESIGNAL_REST_API_KEY) {
-    return res.status(500).json({ error: "ONESIGNAL_REST_API_KEY not configured" });
-  }
+  if (!fcmReady) return res.status(500).json({ error: "FCM non configuré (FIREBASE_SERVICE_ACCOUNT)" });
+
   const notifType = data?.type || "general";
   const conversationId = data?.conversationId || "";
   const postId = data?.postId || "";
   let url = FRONTEND_URL;
   if (notifType === "message" && conversationId) url = `${FRONTEND_URL}/messages/${conversationId}`;
-  else if (["post","like","reaction","comment"].includes(notifType)) url = `${FRONTEND_URL}/post/${postId}`;
-  else if (["follow","friendRequest"].includes(notifType)) url = `${FRONTEND_URL}/profile/${toExternalId}`;
-  const isMessage = notifType === "message";
-  const buttons = isMessage
-    ? [{ id: "reply", text: "Répondre" }, { id: "close", text: "Fermer" }]
-    : [{ id: "view", text: "Voir" }, { id: "close", text: "Fermer" }];
+  else if (["post","like","reaction","comment"].includes(notifType) && postId) url = `${FRONTEND_URL}/post/${postId}`;
+  else if (["follow","friendRequest","friendAccepted"].includes(notifType)) url = `${FRONTEND_URL}/friends`;
+
   try {
-    const response = await fetch("https://onesignal.com/api/v1/notifications", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_API_KEY}` },
-      body: JSON.stringify({
-        app_id: ONESIGNAL_APP_ID,
-        include_aliases: { external_id: [toExternalId] },
-        target_channel: "push",
-        priority: 10,
-        ttl: 259200,
-        headings: { en: title },
-        contents: { en: message },
-        url,
-        chrome_web_icon: fromPhoto || `${FRONTEND_URL}/icon-192.png`,
-        large_icon: fromPhoto && fromPhoto.startsWith('https') ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
-        small_icon: 'tsengo_icon',
-        chrome_web_badge: `${FRONTEND_URL}/icon-192.png`,
-        android_accent_color: 'FF1877F2',
-        android_led_color: 'FF1877F2',
-        web_buttons: buttons,
-        buttons,
-      }),
+    // Alaina ny tokens FCM an'ilay olona ao amin'ny Firestore (users/{uid}.fcmTokens)
+    const userSnap = await admin.firestore().doc(`users/${toExternalId}`).get();
+    const tokens = (userSnap.exists && userSnap.data().fcmTokens) || [];
+    if (!tokens.length) return res.json({ success: true, skipped: "aucun appareil abonné" });
+
+    const result = await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: { title, body: message },
+      data: Object.fromEntries(Object.entries({ type: notifType, conversationId, postId, url }).map(([k, v]) => [k, String(v || "")])),
+      android: { priority: "high" },
+      webpush: {
+        headers: { Urgency: "high", TTL: "259200" },
+        fcmOptions: { link: url },
+        notification: {
+          title,
+          body: message,
+          icon: (fromPhoto && fromPhoto.startsWith("https")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
+          badge: `${FRONTEND_URL}/icon-96.png`,
+          vibrate: [250, 120, 250],
+          tag: notifType === "message" ? `msg_${conversationId}` : undefined,
+          renotify: notifType === "message" ? true : undefined,
+          data: { link: url },
+        },
+      },
     });
-    const result = await response.json();
-    res.json({ success: true, result });
+
+    // Fanadiovana ny tokens maty (appareil niala / cache voafafa)
+    const dead = [];
+    result.responses.forEach((r, idx) => {
+      const code = r.error?.code || "";
+      if (code.includes("registration-token-not-registered") || code.includes("invalid-argument")) dead.push(tokens[idx]);
+    });
+    if (dead.length) {
+      await admin.firestore().doc(`users/${toExternalId}`)
+        .update({ fcmTokens: admin.firestore.FieldValue.arrayRemove(...dead) }).catch(() => {});
+    }
+
+    res.json({ success: true, sent: result.successCount, failed: result.failureCount });
   } catch (err) {
+    console.error("FCM notify:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
