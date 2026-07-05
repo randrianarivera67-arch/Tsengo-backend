@@ -87,7 +87,10 @@ const admin = require("firebase-admin");
 let fcmReady = false;
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
+    admin.initializeApp({
+      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
+      ...(process.env.FIREBASE_DB_URL ? { databaseURL: process.env.FIREBASE_DB_URL } : {}),
+    });
     fcmReady = true;
     console.log("✅ Firebase Admin (FCM) prêt");
   } else {
@@ -241,6 +244,40 @@ app.get("/media-id", async (req, res) => {
 });
 
 // ✅ OneSignal notify
+// ✅ Réponse DIRECTE avy amin'ny notification (inline reply Android)
+app.post("/reply", async (req, res) => {
+  if (NOTIFY_SECRET && req.headers["x-notify-secret"] !== NOTIFY_SECRET) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const { conversationId, meUid, otherUid, text } = req.body || {};
+  if (!conversationId || !meUid || !text?.trim()) return res.status(400).json({ error: "Champs manquants" });
+  if (!fcmReady) return res.status(500).json({ error: "FCM non configuré" });
+  if (!process.env.FIREBASE_DB_URL) return res.status(500).json({ error: "FIREBASE_DB_URL manquant sur le serveur" });
+  // Fiarovana : ilay mamaly dia tsy maintsy ao anaty conversation
+  if (!conversationId.startsWith("group_") && !conversationId.includes(meUid)) {
+    return res.status(403).json({ error: "Non membre de la conversation" });
+  }
+  try {
+    const meSnap = await admin.firestore().doc(`users/${meUid}`).get();
+    const me = meSnap.exists ? meSnap.data() : {};
+    const msg = {
+      fromUid: meUid,
+      ...(otherUid ? { toUid: otherUid } : {}),
+      fromName: me.fullName || "Utilisateur",
+      fromPhoto: me.photoURL || "",
+      text: String(text).slice(0, 2000),
+      ts: Date.now(),
+      read: false,
+    };
+    await admin.database().ref(`conversations/${conversationId}/messages`).push(msg);
+    await admin.database().ref(`conversations/${conversationId}/meta`).update({ lastMessage: msg.text, lastTs: msg.ts }).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    console.error("reply:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/notify", async (req, res) => {
   if (NOTIFY_SECRET && req.headers["x-notify-secret"] !== NOTIFY_SECRET) {
     return res.status(403).json({ error: "Forbidden" });
@@ -265,25 +302,28 @@ app.post("/notify", async (req, res) => {
     const tokens = (userSnap.exists && userSnap.data().fcmTokens) || [];
     if (!tokens.length) return res.json({ success: true, skipped: "aucun appareil abonné" });
 
+    // Réponse directe : ilay olona nandefa = ny lafiny hafa ao amin'ny conversationId
+    const otherUid = (notifType === "message" && conversationId && !conversationId.startsWith("group_"))
+      ? conversationId.split("_").find(u => u !== toExternalId) || ""
+      : "";
+
+    // DATA-ONLY : ny service worker irery no mampiseho (tsy miverina indroa intsony)
     const result = await admin.messaging().sendEachForMulticast({
       tokens,
-      notification: { title, body: message },
-      data: Object.fromEntries(Object.entries({ type: notifType, conversationId, postId, url }).map(([k, v]) => [k, String(v || "")])),
+      data: Object.fromEntries(Object.entries({
+        title,
+        body: message,
+        icon: (fromPhoto && String(fromPhoto).startsWith("http")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
+        type: notifType,
+        conversationId,
+        postId,
+        url,
+        meUid: toExternalId,          // ilay mandray (ho an'ny réponse)
+        otherUid,                     // ilay nandefa
+        canReply: notifType === "message" ? "1" : "",
+      }).map(([k, v]) => [k, String(v || "")])),
       android: { priority: "high" },
-      webpush: {
-        headers: { Urgency: "high", TTL: "259200" },
-        fcmOptions: { link: url },
-        notification: {
-          title,
-          body: message,
-          icon: (fromPhoto && fromPhoto.startsWith("https")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`,
-          badge: `${FRONTEND_URL}/icon-96.png`,
-          vibrate: [250, 120, 250],
-          tag: notifType === "message" ? `msg_${conversationId}` : undefined,
-          renotify: notifType === "message" ? true : undefined,
-          data: { link: url },
-        },
-      },
+      webpush: { headers: { Urgency: "high", TTL: "259200" } },
     });
 
     // Fanadiovana ny tokens maty (appareil niala / cache voafafa)
