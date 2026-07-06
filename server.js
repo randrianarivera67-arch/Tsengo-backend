@@ -216,6 +216,37 @@ app.get("/media", async (req, res) => {
   }
 });
 
+// ✅ Téléchargement RÉEL (Content-Disposition: attachment) — mamela ny navigateur
+// mihitsy no mitantana ny "enregistrer sous", tsy misy fetch/blob/CORS amin'ny
+// frontend intsony (izay no antony indraindray "code" (index.html) no voatahiry
+// raha injay ny CORS na ny type an'ny blob tsy fantatra tsara).
+app.get("/download", async (req, res) => {
+  const { url, name, type } = req.query;
+  if (!url) return res.status(400).send("Paramètre url manquant");
+  try {
+    const target = new URL(url);
+    const backendHost = new URL(BACKEND_URL).host;
+    // Sécurité : io endpoint io dia mamaky ihany ny fichiers avy amin'ny backend-nao
+    // manokana (tsy open proxy ho an'ny URL hafa rehetra)
+    if (target.host !== backendHost) {
+      return res.status(403).send("URL non autorisée");
+    }
+    const r = await fetch(url);
+    if (!r.ok) return res.status(502).send("Téléchargement échoué (source indisponible)");
+    let ct = r.headers.get("content-type") || (type === "video" ? "video/mp4" : "image/jpeg");
+    let ext = ct.includes("/") ? ct.split("/")[1].split(";")[0] : (type === "video" ? "mp4" : "jpg");
+    if (ext === "quicktime") ext = "mov";
+    const filename = `${(name || "traingo_" + Date.now()).replace(/[^a-zA-Z0-9_\-]/g, "_")}.${ext}`;
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Cache-Control", "no-store");
+    r.body.pipe(res);
+  } catch (err) {
+    console.error("download route:", err.message);
+    res.status(500).send("Erreur serveur : " + err.message);
+  }
+});
+
 // ✅ PROXY via file_id (fichiers > 20MB — getFile via bot puis stream)
 app.get("/media-id", async (req, res) => {
   const { file_id } = req.query;
