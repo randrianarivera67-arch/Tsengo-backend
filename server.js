@@ -292,7 +292,10 @@ app.post("/reply", async (req, res) => {
                 badge: `${FRONTEND_URL}/icon-96.png`,
                 vibrate: [250, 120, 250],
                 tag: `msg_${conversationId}`, renotify: true,
-                actions: [{ action: "reply", type: "text", title: "Répondre", placeholder: "Votre message..." }, { action: "close", title: "Fermer" }],
+                actions: [
+                  { action: "reply", type: "text", title: "Répondre", placeholder: "Votre message...", icon: `${FRONTEND_URL}/notif-reply.png` },
+                  { action: "close", title: "Fermer", icon: `${FRONTEND_URL}/notif-close.png` },
+                ],
               },
             },
           });
@@ -337,9 +340,12 @@ app.post("/notify", async (req, res) => {
 
     const iconUrl = (fromPhoto && String(fromPhoto).startsWith("http")) ? fromPhoto : `${FRONTEND_URL}/icon-192.png`;
     const isMsg = notifType === "message";
+    const ICON_REPLY = `${FRONTEND_URL}/notif-reply.png`;
+    const ICON_CLOSE = `${FRONTEND_URL}/notif-close.png`;
+    const ICON_OPEN  = `${FRONTEND_URL}/notif-open.png`;
     const actions = isMsg
-      ? [{ action: "reply", type: "text", title: "Répondre", placeholder: "Votre message..." }, { action: "close", title: "Fermer" }]
-      : [{ action: "open", title: "Voir" }, { action: "close", title: "Fermer" }];
+      ? [{ action: "reply", type: "text", title: "Répondre", placeholder: "Votre message...", icon: ICON_REPLY }, { action: "close", title: "Fermer", icon: ICON_CLOSE }]
+      : [{ action: "open", title: "Voir", icon: ICON_OPEN }, { action: "close", title: "Fermer", icon: ICON_CLOSE }];
 
     // HYBRIDE : "notification" = aseho HO AZY na mikatona tanteraka aza ny app
     // (io no antoka fa tonga foana) ; ny SW dia tsy mampiseho intsony (tsy misy doublon)
