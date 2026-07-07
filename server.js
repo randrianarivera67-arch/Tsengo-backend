@@ -247,28 +247,47 @@ app.get("/download", async (req, res) => {
   }
 });
 
-// ✅ PROXY via file_id (fichiers > 20MB — getFile via bot puis stream)
+// ✅ PROXY via file_id — MISY Range support (streaming/seek fluide amin'ny video)
 app.get("/media-id", async (req, res) => {
   const { file_id } = req.query;
   if (!file_id || !BOT_TOKEN) return res.status(400).json({ error: "Missing file_id or token" });
   try {
-    // Essayer getFile d'abord (marche pour < 20MB)
     const fRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
     const fData = await fRes.json();
-    if (fData.ok && fData.result.file_path) {
-      const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
-      const r = await fetch(url);
-      if (!r.ok) return res.status(404).json({ error: "File not found" });
-      const ct = r.headers.get("content-type") || "application/octet-stream";
-      res.setHeader("Content-Type", ct);
-      res.setHeader("Cache-Control", "public, max-age=31536000");
-      return r.body.pipe(res);
+    if (!fData.ok || !fData.result.file_path) {
+      return res.status(404).json({ error: "Cannot get file: " + (fData.description || "unknown") });
     }
-    // Fichier > 20MB — utiliser bot local download API
-    const dlRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
-    const dlData = await dlRes.json();
-    if (!dlData.ok) return res.status(404).json({ error: "Cannot get file: " + dlData.description });
-    res.status(400).json({ error: "File too large for Telegram API (>20MB)" });
+    const tgUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fData.result.file_path}`;
+
+    // Devine le type via l'extension du file_path
+    const fp = fData.result.file_path.toLowerCase();
+    const ext = fp.split('.').pop();
+    const mimeByExt = {
+      mp4:'video/mp4', mov:'video/quicktime', webm:'video/webm', mkv:'video/x-matroska',
+      jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp',
+      mp3:'audio/mpeg', ogg:'audio/ogg', oga:'audio/ogg', m4a:'audio/mp4', wav:'audio/wav',
+    };
+    const contentType = mimeByExt[ext] || 'application/octet-stream';
+
+    const range = req.headers.range;
+    // Transmet le Range à Telegram (Telegram supporte les requêtes Range)
+    const upstreamHeaders = {};
+    if (range) upstreamHeaders['Range'] = range;
+
+    const r = await fetch(tgUrl, { headers: upstreamHeaders });
+    if (!r.ok && r.status !== 206) return res.status(404).json({ error: "File not found" });
+
+    // Recopie les en-têtes de streaming
+    const len = r.headers.get('content-length');
+    const cr  = r.headers.get('content-range');
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    if (len) res.setHeader("Content-Length", len);
+    if (cr)  res.setHeader("Content-Range", cr);
+
+    res.status(r.status === 206 ? 206 : 200);
+    return r.body.pipe(res);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
