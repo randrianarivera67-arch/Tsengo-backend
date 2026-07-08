@@ -539,20 +539,26 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     return handleGramUpload(req, res);
   }
   try {
+    const isAudio = req.file.mimetype.startsWith("audio");
     const form = new (require('form-data'))();
     form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
-    // diskStorage : mamaky avy amin'ny fichier (kely < 19MB ka tsy olana)
     const fileBuf = req.file.buffer || fsMod.readFileSync(req.file.path);
-    form.append('document', fileBuf, { filename: req.file.originalname || 'video.mp4', contentType: req.file.mimetype });
-    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: 'POST', body: form, headers: form.getHeaders() });
+    const defaultName = isAudio ? 'audio.mp3' : (req.file.mimetype.startsWith('video') ? 'video.mp4' : 'file');
+    const filename = req.file.originalname || defaultName;
+
+    // Audio -> sendAudio (mitahiry ho audio marina) ; hafa -> sendDocument
+    const tgMethod = isAudio ? 'sendAudio' : 'sendDocument';
+    const tgField  = isAudio ? 'audio' : 'document';
+    form.append(tgField, fileBuf, { filename, contentType: req.file.mimetype });
+    const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${tgMethod}`, { method: 'POST', body: form, headers: form.getHeaders() });
     const data = await r.json();
     if (!data.ok) {
       if (req.file.mimetype.startsWith("video")) return handleGramUpload(req, res);
       return res.status(500).json({ error: data.description });
     }
-    const fileId = data.result.document?.file_id || data.result.video?.file_id;
+    const fileId = data.result.document?.file_id || data.result.video?.file_id || data.result.audio?.file_id;
     if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
-    const type = req.file.mimetype.startsWith('video') ? 'video' : req.file.mimetype.startsWith('audio') ? 'audio' : 'image';
+    const type = req.file.mimetype.startsWith('video') ? 'video' : isAudio ? 'audio' : 'image';
     const proxyUrl = `${process.env.BACKEND_URL || 'https://tsengo-backend.onrender.com'}/media-id?file_id=${fileId}`;
     cleanupUpload(req);
     res.json({ url: proxyUrl, fileId, type });
