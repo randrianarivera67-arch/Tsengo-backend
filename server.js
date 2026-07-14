@@ -330,7 +330,6 @@ app.post("/reply", async (req, res) => {
         if (oTokens.length) {
           await admin.messaging().sendEachForMulticast({
             tokens: oTokens,
-            notification: { title: msg.fromName, body: msg.text },
             data: { title: msg.fromName, body: msg.text, icon: msg.fromPhoto || `${FRONTEND_URL}/icon-192.png`, type: "message", conversationId, url: `${FRONTEND_URL}/messages/${conversationId}`, meUid: otherUid, otherUid: meUid, canReply: "1", ns: NOTIFY_SECRET || "" },
             android: { priority: "high" },
             webpush: {
@@ -401,7 +400,6 @@ app.post("/notify", async (req, res) => {
     // (io no antoka fa tonga foana) ; ny SW dia tsy mampiseho intsony (tsy misy doublon)
     const result = await admin.messaging().sendEachForMulticast({
       tokens,
-      notification: { title, body: message },
       data: Object.fromEntries(Object.entries({
         title, body: message, icon: iconUrl,
         type: notifType, conversationId, postId, url,
