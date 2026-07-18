@@ -558,7 +558,7 @@ function transcodeVideoSafe(inputBuf) {
       resolve(buf);
     };
     try { fsMod.writeFileSync(tmpIn, inputBuf); } catch { return done(null); }
-    const timer = setTimeout(() => { try { cmd && cmd.kill("SIGKILL"); } catch {} done(null); }, 240000);
+    const timer = setTimeout(() => { try { cmd && cmd.kill("SIGKILL"); } catch {} done(null); }, 150000);
     try {
       cmd = _ffmpeg(tmpIn)
         .outputOptions([
@@ -584,28 +584,24 @@ function transcodeVideoSafe(inputBuf) {
 
 app.post("/telegram/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
-  // Compression video ≤45 Mo ALOHAN'ny routage (fallback: original raha misy olana)
-  if (req.file.mimetype.startsWith("video") && req.file.size <= 45 * 1024 * 1024) {
-    try {
-      const orig = req.file.buffer || fsMod.readFileSync(req.file.path);
-      const small = await transcodeVideoSafe(orig);
-      if (small) {
-        const np = require("path").join(require("os").tmpdir(), "tv_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7) + ".mp4");
-        fsMod.writeFileSync(np, small);
-        if (req.file.path) { try { fsMod.unlinkSync(req.file.path); } catch {} }
-        req.file.path = np;
-        req.file.buffer = small;
-        req.file.size = small.length;
-        req.file.mimetype = "video/mp4";
-        console.log("[ffmpeg] video: " + orig.length + " -> " + small.length + " octets");
-      }
-    } catch (e) { console.log("[ffmpeg] fallback original:", e.message); }
-  }
   // Auto-route: video >= 19MB → GramJS (2GB max)
   if (req.file.size >= 19 * 1024 * 1024 && req.file.mimetype.startsWith("video")) {
     return handleGramUpload(req, res);
   }
   try {
+    // Compression video (fallback: original raha misy olana)
+    if (req.file.mimetype.startsWith("video")) {
+      const orig = req.file.buffer || fsMod.readFileSync(req.file.path);
+      const small = await transcodeVideoSafe(orig);
+      if (small) {
+        req.file.buffer = small;
+        req.file.size = small.length;
+        req.file.mimetype = "video/mp4";
+        console.log("[ffmpeg] video: " + orig.length + " -> " + small.length + " octets");
+      } else if (!req.file.buffer) {
+        req.file.buffer = orig;
+      }
+    }
     const isAudio = req.file.mimetype.startsWith("audio");
     const form = new (require('form-data'))();
     form.append('chat_id', process.env.TELEGRAM_CHAT_ID);
