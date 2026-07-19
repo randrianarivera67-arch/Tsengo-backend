@@ -626,7 +626,8 @@ app.post("/chunk/complete", (req, res) => {
   }
   chunkSessions.delete(uploadId);
   const BURL = process.env.BACKEND_URL || "https://tsengo-backend.onrender.com";
-  const url = `${BURL}/chunked?ids=${ids.join(",")}&sizes=${sizes.join(",")}&mime=${encodeURIComponent(sess.mime)}`;
+  const MEDIA_WORKER = process.env.MEDIA_WORKER_URL || "https://tsengo-upload.randrianarivera67.workers.dev";
+  const url = `${MEDIA_WORKER}/chunked?ids=${ids.join(",")}&sizes=${sizes.join(",")}&mime=${encodeURIComponent(sess.mime)}`;
   res.json({ url, type: sess.mime.startsWith("video") ? "video" : "file" });
 });
 
