@@ -774,14 +774,19 @@ app.use((err, req, res, next) => {
 
 
 // ── Migration vonjimaika : URL media onrender → Worker (host swap madio) ──
-const OLD_MEDIA_HOST = "tsengo-backend.onrender.com/media-id";
-const NEW_MEDIA_HOST = "tsengo-upload.randrianarivera67.workers.dev/media-id";
+const OLD_HOST = "tsengo-backend.onrender.com";
+const NEW_HOST = "tsengo-upload.randrianarivera67.workers.dev";
+const MEDIA_PATHS = ["/media-id", "/chunked"];
 
 function swapMediaDeep(val) {
   // Mamerina [vaovao, changed] — deep-walk string/objet/array
   if (typeof val === "string") {
-    if (val.includes(OLD_MEDIA_HOST)) return [val.split(OLD_MEDIA_HOST).join(NEW_MEDIA_HOST), true];
-    return [val, false];
+    let out = val, changed = false;
+    for (const pth of MEDIA_PATHS) {
+      const oldp = OLD_HOST + pth;
+      if (out.includes(oldp)) { out = out.split(oldp).join(NEW_HOST + pth); changed = true; }
+    }
+    return [out, changed];
   }
   if (Array.isArray(val)) {
     let ch = false;
