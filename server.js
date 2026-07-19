@@ -771,4 +771,61 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || "Erreur serveur" });
 });
 
+
+// ── Migration vonjimaika : URL media onrender → Worker (host swap madio) ──
+const OLD_MEDIA_HOST = "tsengo-backend.onrender.com/media-id";
+const NEW_MEDIA_HOST = "tsengo-upload.randrianarivera67.workers.dev/media-id";
+
+function swapMediaDeep(val) {
+  // Mamerina [vaovao, changed] — deep-walk string/objet/array
+  if (typeof val === "string") {
+    if (val.includes(OLD_MEDIA_HOST)) return [val.split(OLD_MEDIA_HOST).join(NEW_MEDIA_HOST), true];
+    return [val, false];
+  }
+  if (Array.isArray(val)) {
+    let ch = false;
+    const out = val.map(v => { const [nv, c] = swapMediaDeep(v); if (c) ch = true; return nv; });
+    return [out, ch];
+  }
+  if (val && typeof val === "object") {
+    let ch = false;
+    const out = {};
+    for (const k of Object.keys(val)) { const [nv, c] = swapMediaDeep(val[k]); if (c) ch = true; out[k] = nv; }
+    return [out, ch];
+  }
+  return [val, false];
+}
+
+app.get("/admin/migrate-media", async (req, res) => {
+  if (NOTIFY_SECRET && req.query.secret !== NOTIFY_SECRET) return res.status(403).json({ error: "Forbidden" });
+  const dry = req.query.dry === "1" || req.query.dry === "true";
+  const collections = ["posts", "stories", "users", "shops", "artists", "groups", "pages", "announcements", "events", "notes", "ads"];
+  const report = {};
+  try {
+    const db = admin.firestore();
+    for (const col of collections) {
+      let scanned = 0, changed = 0;
+      const snap = await db.collection(col).get();
+      let batch = db.batch(); let inBatch = 0;
+      for (const doc of snap.docs) {
+        scanned++;
+        const [nv, ch] = swapMediaDeep(doc.data());
+        if (ch) {
+          changed++;
+          if (!dry) {
+            batch.set(doc.ref, nv);
+            inBatch++;
+            if (inBatch >= 400) { await batch.commit(); batch = db.batch(); inBatch = 0; }
+          }
+        }
+      }
+      if (!dry && inBatch > 0) await batch.commit();
+      report[col] = { scanned, changed };
+    }
+    res.json({ dry, done: true, report });
+  } catch (e) {
+    res.status(500).json({ error: e.message, report });
+  }
+});
+
 app.listen(PORT, () => console.log(`Traingo backend running on port ${PORT}`));
