@@ -557,7 +557,10 @@ app.post("/telegram/upload", upload.single("file"), async (req, res) => {
     const fileId = data.result.document?.file_id || data.result.video?.file_id || data.result.audio?.file_id;
     if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
     const type = req.file.mimetype.startsWith('video') ? 'video' : isAudio ? 'audio' : 'image';
-    const proxyUrl = `${process.env.BACKEND_URL || 'https://tsengo-backend.onrender.com'}/media-id?file_id=${fileId}`;
+    // ✅ FIX : ny lecture média dia avy amin'ny Cloudflare Worker (edge, tsy matory)
+    // fa tsy ny Render (free tier — cold start 30-60s → sary fotsy/tsy miseho).
+    const MEDIA_BASE = process.env.MEDIA_WORKER_URL || "https://tsengo-upload.randrianarivera67.workers.dev";
+    const proxyUrl = `${MEDIA_BASE}/media-id?file_id=${fileId}`;
     cleanupUpload(req);
     res.json({ url: proxyUrl, fileId, type });
   } catch (err) {
@@ -602,7 +605,13 @@ app.post("/chunk/upload", upload.single("file"), async (req, res) => {
     form.append("document", buf, { filename: `traingo_${uploadId}_${idx}.part`, contentType: "application/octet-stream" });
     const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: "POST", body: form, headers: form.getHeaders() });
     const data = await r.json();
-    if (!data.ok) return res.status(500).json({ error: data.description || "Erreur Telegram" });
+    if (!data.ok) {
+      // ✅ FIX flood : ampitaina amin'ny client ny "retry_after" mba hiandry araka
+      // ny tokony ho izy (fa tsy hijanona amin'ny erreur amin'ny fanapahana video)
+      const ra = data.parameters?.retry_after;
+      const desc = data.description || "Erreur Telegram";
+      return res.status(ra ? 429 : 500).json({ error: ra ? `Too Many Requests: retry after ${ra}` : desc, retry_after: ra });
+    }
     const fileId = data.result.document?.file_id;
     if (!fileId) return res.status(500).json({ error: "Telegram n'a pas renvoyé de file_id" });
     sess.chunks[idx] = { fileId, size: req.file.size };
