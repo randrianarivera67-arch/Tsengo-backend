@@ -358,11 +358,46 @@ app.post("/reply", async (req, res) => {
   }
 });
 
-app.post("/notify", async (req, res) => {
-  if (NOTIFY_SECRET && req.headers["x-notify-secret"] !== NOTIFY_SECRET) {
-    return res.status(403).json({ error: "Forbidden" });
+/**
+ * Fanamarinana ny mpiantso ny /notify.
+ *
+ * 1) Authorization: Bearer <firebase-id-token>  ← ARINDRAINA
+ *    Voamarina amin'i Google, tsy azo foronina, ary fantatra ny uid marina.
+ * 2) x-notify-secret                            ← TALOHA, ho esorina
+ *    Ny secret dia hita ao anaty bundle public : tsy fiarovana marina izy,
+ *    fa notazonina mandritra ny fifindrana mba tsy hisy push tapaka.
+ *
+ * @returns {{ok:true, uid:string|null, legacy:boolean} | {ok:false, code:number, error:string}}
+ */
+async function notifyAuth(req) {
+  const authz = req.headers["authorization"] || "";
+  const idToken = authz.startsWith("Bearer ") ? authz.slice(7).trim() : "";
+
+  if (idToken) {
+    try {
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      return { ok: true, uid: decoded.uid, legacy: false };
+    } catch (e) {
+      return { ok: false, code: 401, error: "Token invalide" };
+    }
   }
+
+  // ── Lalana taloha (ho esorina) ─────────────────────────────────────────
+  if (NOTIFY_SECRET && req.headers["x-notify-secret"] === NOTIFY_SECRET) {
+    // ⚠️ Rehefa tsy miseho intsony ity log ity mandritra ny andro vitsivitsy,
+    //    dia ESORY ity bloc ity manontolo ary avelao 401 ihany.
+    console.warn("notify: legacy secret (bundle tranainy) — ho esorina");
+    return { ok: true, uid: null, legacy: true };
+  }
+
+  return { ok: false, code: 401, error: "Authentification requise" };
+}
+
+app.post("/notify", async (req, res) => {
+  const auth = await notifyAuth(req);
+  if (!auth.ok) return res.status(auth.code).json({ error: auth.error });
   const { toExternalId, title, message, data, fromPhoto } = req.body;
+  if (auth.uid) req.__fromUid = auth.uid;   // mpandefa voamarina (fanaraha-maso)
   if (!toExternalId || !title || !message) {
     return res.status(400).json({ error: "toExternalId, title, message required" });
   }
