@@ -330,7 +330,7 @@ app.post("/reply", async (req, res) => {
         if (oTokens.length) {
           await admin.messaging().sendEachForMulticast({
             tokens: oTokens,
-            data: { title: msg.fromName, body: msg.text, icon: msg.fromPhoto || `${FRONTEND_URL}/icon-192.png`, type: "message", conversationId, url: `${FRONTEND_URL}/messages/${conversationId}`, meUid: otherUid, otherUid: meUid, canReply: "1", ns: NOTIFY_SECRET || "" },
+            data: { ns: NOTIFY_SECRET || "", title: msg.fromName, body: msg.text, icon: msg.fromPhoto || `${FRONTEND_URL}/icon-192.png`, type: "message", conversationId, url: `${FRONTEND_URL}/messages/${conversationId}`, meUid: otherUid, otherUid: meUid, canReply: "1", ns: NOTIFY_SECRET || "" },
             android: { priority: "high" },
             webpush: {
               headers: { Urgency: "high" },
