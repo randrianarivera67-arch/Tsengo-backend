@@ -32,7 +32,7 @@ async function getGramClient() {
 }
 
 const PORT = process.env.PORT || 3001;
-const FRONTEND_URL = process.env.FRONTEND_URL || "https://tsengo-ai4n.vercel.app";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://trengo-mg.vercel.app";
 const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
 const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
 const NOTIFY_SECRET = process.env.NOTIFY_SECRET || "";
